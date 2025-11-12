@@ -52,20 +52,6 @@ jobs:
           pip install -r requirements.txt
           echo "✅ Dependencies installed"
       
-      - name: 🗑️ Delete old parquet files
-        run: |
-          echo "🔍 Checking for old parquet files..."
-          OLD_FILES=$(find . -maxdepth 1 -name "Master_nse_data_*.parquet" -type f)
-          
-          if [ -n "$OLD_FILES" ]; then
-            echo "🗑️ Found old parquet files - deleting:"
-            echo "$OLD_FILES"
-            rm -f Master_nse_data_*.parquet
-            echo "✅ Old files deleted"
-          else
-            echo "ℹ️ No old parquet files found"
-          fi
-      
       - name: 🚀 Generate Parquet (with retry)
         id: generate
         uses: nick-fields/retry@v3
@@ -78,20 +64,19 @@ jobs:
       - name: 🔍 Check for generated parquet file
         id: check_file
         run: |
-          PARQUET_FILE=$(find . -maxdepth 1 -name "Master_nse_data_*.parquet" -type f | head -1)
-          
-          if [ -z "$PARQUET_FILE" ]; then
+          if [ -f "Master_nse_data.parquet" ]; then
+            echo "✅ Parquet file generated successfully"
+            FILE_SIZE=$(du -h "Master_nse_data.parquet" | cut -f1)
+            FILE_SIZE_MB=$(du -m "Master_nse_data.parquet" | cut -f1)
+            echo "📊 File size: $FILE_SIZE"
+            echo "file_exists=true" >> $GITHUB_OUTPUT
+            echo "file_size=$FILE_SIZE" >> $GITHUB_OUTPUT
+            echo "file_size_mb=$FILE_SIZE_MB" >> $GITHUB_OUTPUT
+          else
             echo "❌ Parquet file not found!"
             echo "file_exists=false" >> $GITHUB_OUTPUT
             exit 1
           fi
-          
-          echo "✅ Found: $PARQUET_FILE"
-          FILE_SIZE=$(du -h "$PARQUET_FILE" | cut -f1)
-          echo "📊 File size: $FILE_SIZE"
-          echo "file_exists=true" >> $GITHUB_OUTPUT
-          echo "parquet_file=$PARQUET_FILE" >> $GITHUB_OUTPUT
-          echo "file_size=$FILE_SIZE" >> $GITHUB_OUTPUT
       
       - name: ✅ Validate parquet file
         if: steps.check_file.outputs.file_exists == 'true'
@@ -101,7 +86,7 @@ jobs:
           import polars as pl
           import sys
           try:
-              df = pl.read_parquet('${{ steps.check_file.outputs.parquet_file }}')
+              df = pl.read_parquet('Master_nse_data.parquet')
               rows = len(df)
               cols = len(df.columns)
               print(f'✅ Validation passed: {rows:,} rows, {cols} columns')
@@ -122,27 +107,58 @@ jobs:
               sys.exit(1)
           "
       
-      - name: 💾 Commit and push parquet file
+      - name: 🗑️ Delete old GitHub Release
         if: steps.check_file.outputs.file_exists == 'true'
-        id: commit
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          echo "➕ Staging parquet file..."
-          git add Master_nse_data_*.parquet
+          echo "🔍 Checking for existing 'latest' release..."
           
+          if gh release view latest >/dev/null 2>&1; then
+            echo "🗑️ Deleting old 'latest' release..."
+            gh release delete latest --yes --cleanup-tag
+            echo "✅ Old release deleted"
+          else
+            echo "ℹ️ No existing 'latest' release found"
+          fi
+      
+      - name: 📦 Create new GitHub Release and upload parquet
+        if: steps.check_file.outputs.file_exists == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
           DATE_IST=$(TZ='Asia/Kolkata' date '+%d-%m-%Y %I:%M:%S %p IST')
           FILE_SIZE="${{ steps.check_file.outputs.file_size }}"
-          FILE_NAME="${{ steps.check_file.outputs.parquet_file }}"
           
-          echo "💾 Creating commit..."
-          git commit -m "✅ NSE Master data updated on ${DATE_IST}" \
-            -m "📁 File: ${FILE_NAME}" \
-            -m "📊 Size: ${FILE_SIZE}" \
-            -m "🤖 Automated monthly update via GitHub Actions"
+          echo "📦 Creating new 'latest' release..."
+          gh release create latest \
+            --title "NSE Master Data - Latest" \
+            --notes "## 📊 NSE Master Data - Latest Version
+
+          **📅 Updated On:** ${DATE_IST}
+          **📦 File Size:** ${FILE_SIZE}
+          **🔄 Auto-generated:** Monthly sync from upstream
           
-          echo "🚀 Pushing to remote..."
-          git push origin main
+          ### 📥 Download
+          Click on the file below to download the latest NSE master data parquet file.
           
-          echo "✨ Parquet file successfully committed and pushed!"
+          ### 🔗 Direct URL for Apps
+          \`\`\`
+          https://github.com/navikaran2/eod2_data/releases/latest/download/Master_nse_data.parquet
+          \`\`\`
+          
+          ### 📋 Use in Python/Polars
+          \`\`\`python
+          import polars as pl
+          url = 'https://github.com/navikaran2/eod2_data/releases/latest/download/Master_nse_data.parquet'
+          df = pl.read_parquet(url)
+          \`\`\`
+          
+          ---
+          🤖 *This release is automatically generated every month on the 15th*" \
+            Master_nse_data.parquet
+          
+          echo "✅ Release created and file uploaded successfully!"
       
       - name: 📊 Generate workflow summary
         if: always()
@@ -156,12 +172,19 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           
           # Parquet generation status
-          echo "### 📦 Parquet Generation" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 Parquet Generation & Release" >> $GITHUB_STEP_SUMMARY
           if [ "${{ steps.check_file.outputs.file_exists }}" == "true" ]; then
             echo "✅ **Status**: Success" >> $GITHUB_STEP_SUMMARY
-            echo "📁 **File**: \`${{ steps.check_file.outputs.parquet_file }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "📁 **File**: \`Master_nse_data.parquet\`" >> $GITHUB_STEP_SUMMARY
             echo "📊 **Size**: ${{ steps.check_file.outputs.file_size }}" >> $GITHUB_STEP_SUMMARY
-            echo "💾 **Commit**: New data pushed successfully" >> $GITHUB_STEP_SUMMARY
+            echo "🔗 **Download URL**: [Click here](https://github.com/navikaran2/eod2_data/releases/latest/download/Master_nse_data.parquet)" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "💡 **For Streamlit/Python:**" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`python" >> $GITHUB_STEP_SUMMARY
+            echo "import polars as pl" >> $GITHUB_STEP_SUMMARY
+            echo "url = 'https://github.com/navikaran2/eod2_data/releases/latest/download/Master_nse_data.parquet'" >> $GITHUB_STEP_SUMMARY
+            echo "df = pl.read_parquet(url)" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ **Status**: Failed - File generation error" >> $GITHUB_STEP_SUMMARY
           fi
@@ -176,6 +199,7 @@ jobs:
         run: |
           echo "🧹 Cleaning up..."
           git remote remove upstream 2>/dev/null || true
+          rm -f Master_nse_data.parquet 2>/dev/null || true
           echo "✅ Cleanup completed"
       
       - name: 🔔 Notify on failure
