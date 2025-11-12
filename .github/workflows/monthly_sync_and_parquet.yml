@@ -107,7 +107,60 @@ jobs:
               sys.exit(1)
           "
       
-🤖 *This release is automatically generated every month on the 15th*" \
+      - name: 🗑️ Delete old GitHub Release
+        if: steps.check_file.outputs.file_exists == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REPO="${{ github.repository }}"
+          echo "🎯 Target repository: $REPO"
+          echo "🔍 Checking for existing 'latest' release..."
+          
+          if gh release view latest --repo $REPO >/dev/null 2>&1; then
+            echo "🗑️ Deleting old 'latest' release..."
+            gh release delete latest --yes --cleanup-tag --repo $REPO
+            echo "✅ Old release deleted"
+          else
+            echo "ℹ️ No existing 'latest' release found"
+          fi
+      
+      - name: 📦 Create new GitHub Release and upload parquet
+        if: steps.check_file.outputs.file_exists == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REPO="${{ github.repository }}"
+          DATE_IST=$(TZ='Asia/Kolkata' date '+%d-%m-%Y %I:%M:%S %p IST')
+          FILE_SIZE="${{ steps.check_file.outputs.file_size }}"
+          
+          echo "🎯 Target repository: $REPO"
+          echo "📦 Creating new 'latest' release..."
+          gh release create latest \
+            --repo $REPO \
+            --title "NSE Master Data - Latest" \
+            --notes "## 📊 NSE Master Data - Latest Version
+
+          **📅 Updated On:** ${DATE_IST}
+          **📦 File Size:** ${FILE_SIZE}
+          **🔄 Auto-generated:** Monthly sync from upstream
+          
+          ### 📥 Download
+          Click on the file below to download the latest NSE master data parquet file.
+          
+          ### 🔗 Direct URL for Apps
+          \`\`\`
+          https://github.com/$REPO/releases/latest/download/Master_nse_data.parquet
+          \`\`\`
+          
+          ### 📋 Use in Python/Polars
+          \`\`\`python
+          import polars as pl
+          url = 'https://github.com/$REPO/releases/latest/download/Master_nse_data.parquet'
+          df = pl.read_parquet(url)
+          \`\`\`
+          
+          ---
+          🤖 *This release is automatically generated every month on the 15th*" \
             Master_nse_data.parquet
           
           echo "✅ Release created and file uploaded successfully!"
