@@ -1,13 +1,20 @@
 import os
 import polars as pl
+from datetime import datetime
 
 print("=" * 60)
 print("🚀 NSE Data Merge to Parquet - Started")
 print("=" * 60)
 
+# 📅 Get current date in Indian format (DD-MM-YYYY)
+current_date = datetime.now().strftime("%d-%m-%Y")
+output_filename = f"Master_nse_data_{current_date}.parquet"
+
 # 📁 Paths (GitHub Actions compatible)
 input_folder = "daily"
-output_parquet = "merged_data.parquet"
+output_parquet = output_filename
+
+print(f"📁 Output file: {output_filename}")
 
 # 📋 Fixed base columns and dtypes
 schema_overrides = {
