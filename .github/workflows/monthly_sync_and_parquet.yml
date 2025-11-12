@@ -5,12 +5,6 @@ on:
     # 15th of every month at 6:00 PM IST (12:30 PM UTC)
     - cron: '30 12 15 * *'
   workflow_dispatch: # Manual trigger
-    inputs:
-      force_regenerate:
-        description: 'Force parquet generation even if no upstream changes?'
-        type: boolean
-        default: false
-        required: false
 
 permissions:
   contents: write
@@ -23,91 +17,56 @@ jobs:
       - name: 🧾 Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Full history for proper sync
+          fetch-depth: 1  # Fast clone - only latest commit
       
       - name: 🔍 Configure Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
       
-      - name: 🔄 Check upstream changes
-        id: check_upstream
-        run: |
-          echo "📡 Fetching upstream repository..."
-          git remote add upstream https://github.com/BennyThadikaran/eod2_data.git || true
-          git fetch upstream main
-          
-          echo "🔍 Checking for changes..."
-          BEHIND=$(git rev-list HEAD..upstream/main --count)
-          
-          if [ "$BEHIND" -gt 0 ]; then
-            echo "✅ Found $BEHIND new commits in upstream"
-            echo "has_changes=true" >> $GITHUB_OUTPUT
-            echo "commits_behind=$BEHIND" >> $GITHUB_OUTPUT
-          else
-            echo "ℹ️ Already up to date with upstream"
-            echo "has_changes=false" >> $GITHUB_OUTPUT
-            echo "commits_behind=0" >> $GITHUB_OUTPUT
-          fi
-      
       - name: 🔄 Sync with upstream
-        if: steps.check_upstream.outputs.has_changes == 'true'
         run: |
-          echo "🔄 Syncing with upstream..."
-          git merge upstream/main --no-edit -m "🔄 Synced with upstream on $(TZ='Asia/Kolkata' date +"%Y-%m-%d %I:%M:%S %p IST")"
+          echo "📡 Adding upstream repository..."
+          git remote add upstream https://github.com/BennyThadikaran/eod2_data.git || true
+          
+          echo "🔄 Fetching latest data from upstream..."
+          git fetch upstream main --depth=1
+          
+          echo "🔀 Merging upstream changes..."
+          git merge upstream/main --no-edit --allow-unrelated-histories -m "🔄 Synced with upstream on $(TZ='Asia/Kolkata' date '+%d-%m-%Y %I:%M:%S %p IST')"
           
           echo "📤 Pushing sync to origin..."
           git push origin main
           
           echo "✅ Sync completed successfully!"
       
-      - name: 🛑 Check if parquet generation needed
-        id: should_generate
-        run: |
-          FORCE="${{ github.event.inputs.force_regenerate }}"
-          HAS_CHANGES="${{ steps.check_upstream.outputs.has_changes }}"
-          
-          if [ "$FORCE" == "true" ]; then
-            echo "🔄 Force regenerate enabled - will generate parquet"
-            echo "generate=true" >> $GITHUB_OUTPUT
-            echo "reason=forced" >> $GITHUB_OUTPUT
-          elif [ "$HAS_CHANGES" == "true" ]; then
-            echo "✅ Upstream changes detected - will generate parquet"
-            echo "generate=true" >> $GITHUB_OUTPUT
-            echo "reason=upstream_changes" >> $GITHUB_OUTPUT
-          else
-            echo "⏭️ No changes detected and force not enabled - skipping parquet generation"
-            echo "generate=false" >> $GITHUB_OUTPUT
-            echo "reason=no_changes" >> $GITHUB_OUTPUT
-          fi
-      
       - name: ⚙️ Set up Python
-        if: steps.should_generate.outputs.generate == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
       
       - name: 📦 Install dependencies
-        if: steps.should_generate.outputs.generate == 'true'
         run: |
           echo "📦 Installing Python dependencies..."
           pip install -r requirements.txt
           echo "✅ Dependencies installed"
       
-      - name: 🗑️ Delete old parquet file
-        if: steps.should_generate.outputs.generate == 'true'
+      - name: 🗑️ Delete old parquet files
         run: |
-          if [ -f "merged_data.parquet" ]; then
-            echo "🗑️ Removing old parquet file..."
-            rm -f merged_data.parquet
-            echo "✅ Old file removed"
+          echo "🔍 Checking for old parquet files..."
+          OLD_FILES=$(find . -maxdepth 1 -name "Master_nse_data_*.parquet" -type f)
+          
+          if [ -n "$OLD_FILES" ]; then
+            echo "🗑️ Found old parquet files - deleting:"
+            echo "$OLD_FILES"
+            rm -f Master_nse_data_*.parquet
+            echo "✅ Old files deleted"
           else
-            echo "ℹ️ No old parquet file found"
+            echo "ℹ️ No old parquet files found"
           fi
       
       - name: 🚀 Generate Parquet (with retry)
-        if: steps.should_generate.outputs.generate == 'true'
         id: generate
         uses: nick-fields/retry@v3
         with:
@@ -117,20 +76,22 @@ jobs:
           command: python merge_to_parquet.py
       
       - name: 🔍 Check for generated parquet file
-        if: steps.should_generate.outputs.generate == 'true'
         id: check_file
         run: |
-          if [ -f "merged_data.parquet" ]; then
-            echo "✅ Parquet file generated successfully"
-            FILE_SIZE=$(du -h "merged_data.parquet" | cut -f1)
-            echo "📊 File size: $FILE_SIZE"
-            echo "file_exists=true" >> $GITHUB_OUTPUT
-            echo "file_size=$FILE_SIZE" >> $GITHUB_OUTPUT
-          else
+          PARQUET_FILE=$(find . -maxdepth 1 -name "Master_nse_data_*.parquet" -type f | head -1)
+          
+          if [ -z "$PARQUET_FILE" ]; then
             echo "❌ Parquet file not found!"
             echo "file_exists=false" >> $GITHUB_OUTPUT
             exit 1
           fi
+          
+          echo "✅ Found: $PARQUET_FILE"
+          FILE_SIZE=$(du -h "$PARQUET_FILE" | cut -f1)
+          echo "📊 File size: $FILE_SIZE"
+          echo "file_exists=true" >> $GITHUB_OUTPUT
+          echo "parquet_file=$PARQUET_FILE" >> $GITHUB_OUTPUT
+          echo "file_size=$FILE_SIZE" >> $GITHUB_OUTPUT
       
       - name: ✅ Validate parquet file
         if: steps.check_file.outputs.file_exists == 'true'
@@ -140,7 +101,7 @@ jobs:
           import polars as pl
           import sys
           try:
-              df = pl.read_parquet('merged_data.parquet')
+              df = pl.read_parquet('${{ steps.check_file.outputs.parquet_file }}')
               rows = len(df)
               cols = len(df.columns)
               print(f'✅ Validation passed: {rows:,} rows, {cols} columns')
@@ -166,30 +127,17 @@ jobs:
         id: commit
         run: |
           echo "➕ Staging parquet file..."
-          git add merged_data.parquet
+          git add Master_nse_data_*.parquet
           
-          DATE_IST=$(TZ='Asia/Kolkata' date +"%Y-%m-%d %I:%M:%S %p IST")
+          DATE_IST=$(TZ='Asia/Kolkata' date '+%d-%m-%Y %I:%M:%S %p IST')
           FILE_SIZE="${{ steps.check_file.outputs.file_size }}"
-          COMMITS="${{ steps.check_upstream.outputs.commits_behind }}"
-          REASON="${{ steps.should_generate.outputs.reason }}"
+          FILE_NAME="${{ steps.check_file.outputs.parquet_file }}"
           
-          if git diff --cached --quiet; then
-            echo "ℹ️ No changes in parquet file content"
-            git commit --allow-empty -m "✅ NSE merged data refreshed on ${DATE_IST}" \
-              -m "📊 File size: ${FILE_SIZE}" \
-              -m "📝 Reason: ${REASON}" \
-              -m "🔄 Upstream commits synced: ${COMMITS}" \
-              -m "🤖 Automated monthly update via GitHub Actions"
-            echo "commit_type=refresh" >> $GITHUB_OUTPUT
-          else
-            echo "💾 New data detected - creating commit..."
-            git commit -m "✅ NSE merged data updated on ${DATE_IST}" \
-              -m "📊 File size: ${FILE_SIZE}" \
-              -m "📝 Reason: ${REASON}" \
-              -m "🔄 Upstream commits synced: ${COMMITS}" \
-              -m "🤖 Automated monthly update via GitHub Actions"
-            echo "commit_type=new" >> $GITHUB_OUTPUT
-          fi
+          echo "💾 Creating commit..."
+          git commit -m "✅ NSE Master data updated on ${DATE_IST}" \
+            -m "📁 File: ${FILE_NAME}" \
+            -m "📊 Size: ${FILE_SIZE}" \
+            -m "🤖 Automated monthly update via GitHub Actions"
           
           echo "🚀 Pushing to remote..."
           git push origin main
@@ -202,40 +150,25 @@ jobs:
           echo "## 📈 Monthly Sync & Parquet Generation Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          # Upstream status
+          # Sync status
           echo "### 🔄 Upstream Sync" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ steps.check_upstream.outputs.has_changes }}" == "true" ]; then
-            echo "✅ **Synced**: ${{ steps.check_upstream.outputs.commits_behind }} new commits merged" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "ℹ️ **Status**: Already up to date" >> $GITHUB_STEP_SUMMARY
-          fi
+          echo "✅ **Status**: Synced with upstream successfully" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           # Parquet generation status
           echo "### 📦 Parquet Generation" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ steps.should_generate.outputs.generate }}" == "true" ]; then
-            if [ "${{ steps.check_file.outputs.file_exists }}" == "true" ]; then
-              echo "✅ **Status**: Success" >> $GITHUB_STEP_SUMMARY
-              echo "📁 **File**: \`merged_data.parquet\`" >> $GITHUB_STEP_SUMMARY
-              echo "📊 **Size**: ${{ steps.check_file.outputs.file_size }}" >> $GITHUB_STEP_SUMMARY
-              echo "📝 **Reason**: ${{ steps.should_generate.outputs.reason }}" >> $GITHUB_STEP_SUMMARY
-              
-              if [ "${{ steps.commit.outputs.commit_type }}" == "new" ]; then
-                echo "💾 **Commit**: New data pushed" >> $GITHUB_STEP_SUMMARY
-              elif [ "${{ steps.commit.outputs.commit_type }}" == "refresh" ]; then
-                echo "🔄 **Commit**: Refreshed (no content change)" >> $GITHUB_STEP_SUMMARY
-              fi
-            else
-              echo "❌ **Status**: Failed - File generation error" >> $GITHUB_STEP_SUMMARY
-            fi
+          if [ "${{ steps.check_file.outputs.file_exists }}" == "true" ]; then
+            echo "✅ **Status**: Success" >> $GITHUB_STEP_SUMMARY
+            echo "📁 **File**: \`${{ steps.check_file.outputs.parquet_file }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "📊 **Size**: ${{ steps.check_file.outputs.file_size }}" >> $GITHUB_STEP_SUMMARY
+            echo "💾 **Commit**: New data pushed successfully" >> $GITHUB_STEP_SUMMARY
           else
-            echo "⏭️ **Status**: Skipped" >> $GITHUB_STEP_SUMMARY
-            echo "📝 **Reason**: ${{ steps.should_generate.outputs.reason }}" >> $GITHUB_STEP_SUMMARY
+            echo "❌ **Status**: Failed - File generation error" >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
           
           # Timestamp
-          DATE_IST=$(TZ='Asia/Kolkata' date +"%Y-%m-%d %I:%M:%S %p IST")
+          DATE_IST=$(TZ='Asia/Kolkata' date '+%d-%m-%Y %I:%M:%S %p IST')
           echo "🕒 **Completed**: ${DATE_IST}" >> $GITHUB_STEP_SUMMARY
       
       - name: 🧹 Cleanup
