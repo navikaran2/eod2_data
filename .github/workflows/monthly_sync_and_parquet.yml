@@ -1,0 +1,253 @@
+name: Monthly Data Sync & Parquet Generator
+
+on:
+  schedule:
+    # 15th of every month at 6:00 PM IST (12:30 PM UTC)
+    - cron: '30 12 15 * *'
+  workflow_dispatch: # Manual trigger
+    inputs:
+      force_regenerate:
+        description: 'Force parquet generation even if no upstream changes?'
+        type: boolean
+        default: false
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  sync-and-generate:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 🧾 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for proper sync
+      
+      - name: 🔍 Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      
+      - name: 🔄 Check upstream changes
+        id: check_upstream
+        run: |
+          echo "📡 Fetching upstream repository..."
+          git remote add upstream https://github.com/BennyThadikaran/eod2_data.git || true
+          git fetch upstream main
+          
+          echo "🔍 Checking for changes..."
+          BEHIND=$(git rev-list HEAD..upstream/main --count)
+          
+          if [ "$BEHIND" -gt 0 ]; then
+            echo "✅ Found $BEHIND new commits in upstream"
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "commits_behind=$BEHIND" >> $GITHUB_OUTPUT
+          else
+            echo "ℹ️ Already up to date with upstream"
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "commits_behind=0" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: 🔄 Sync with upstream
+        if: steps.check_upstream.outputs.has_changes == 'true'
+        run: |
+          echo "🔄 Syncing with upstream..."
+          git merge upstream/main --no-edit -m "🔄 Synced with upstream on $(TZ='Asia/Kolkata' date +"%Y-%m-%d %I:%M:%S %p IST")"
+          
+          echo "📤 Pushing sync to origin..."
+          git push origin main
+          
+          echo "✅ Sync completed successfully!"
+      
+      - name: 🛑 Check if parquet generation needed
+        id: should_generate
+        run: |
+          FORCE="${{ github.event.inputs.force_regenerate }}"
+          HAS_CHANGES="${{ steps.check_upstream.outputs.has_changes }}"
+          
+          if [ "$FORCE" == "true" ]; then
+            echo "🔄 Force regenerate enabled - will generate parquet"
+            echo "generate=true" >> $GITHUB_OUTPUT
+            echo "reason=forced" >> $GITHUB_OUTPUT
+          elif [ "$HAS_CHANGES" == "true" ]; then
+            echo "✅ Upstream changes detected - will generate parquet"
+            echo "generate=true" >> $GITHUB_OUTPUT
+            echo "reason=upstream_changes" >> $GITHUB_OUTPUT
+          else
+            echo "⏭️ No changes detected and force not enabled - skipping parquet generation"
+            echo "generate=false" >> $GITHUB_OUTPUT
+            echo "reason=no_changes" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: ⚙️ Set up Python
+        if: steps.should_generate.outputs.generate == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: 📦 Install dependencies
+        if: steps.should_generate.outputs.generate == 'true'
+        run: |
+          echo "📦 Installing Python dependencies..."
+          pip install -r requirements.txt
+          echo "✅ Dependencies installed"
+      
+      - name: 🗑️ Delete old parquet file
+        if: steps.should_generate.outputs.generate == 'true'
+        run: |
+          if [ -f "merged_data.parquet" ]; then
+            echo "🗑️ Removing old parquet file..."
+            rm -f merged_data.parquet
+            echo "✅ Old file removed"
+          else
+            echo "ℹ️ No old parquet file found"
+          fi
+      
+      - name: 🚀 Generate Parquet (with retry)
+        if: steps.should_generate.outputs.generate == 'true'
+        id: generate
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 15
+          max_attempts: 3
+          retry_wait_seconds: 60
+          command: python merge_to_parquet.py
+      
+      - name: 🔍 Check for generated parquet file
+        if: steps.should_generate.outputs.generate == 'true'
+        id: check_file
+        run: |
+          if [ -f "merged_data.parquet" ]; then
+            echo "✅ Parquet file generated successfully"
+            FILE_SIZE=$(du -h "merged_data.parquet" | cut -f1)
+            echo "📊 File size: $FILE_SIZE"
+            echo "file_exists=true" >> $GITHUB_OUTPUT
+            echo "file_size=$FILE_SIZE" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Parquet file not found!"
+            echo "file_exists=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+      
+      - name: ✅ Validate parquet file
+        if: steps.check_file.outputs.file_exists == 'true'
+        run: |
+          echo "🔍 Validating parquet file..."
+          python -c "
+          import polars as pl
+          import sys
+          try:
+              df = pl.read_parquet('merged_data.parquet')
+              rows = len(df)
+              cols = len(df.columns)
+              print(f'✅ Validation passed: {rows:,} rows, {cols} columns')
+              print(f'📋 Columns: {df.columns}')
+              print(f'📅 Date range: {df[\"Date\"].min()} to {df[\"Date\"].max()}')
+              print(f'🏢 Unique symbols: {df[\"SYMBOL\"].n_unique()}')
+              
+              if rows == 0:
+                  print('❌ Error: Parquet file is empty!')
+                  sys.exit(1)
+              
+              # Show first 5 rows preview
+              print('\n📊 Data Preview (first 5 rows):')
+              print(df.head(5))
+              
+          except Exception as e:
+              print(f'❌ Validation failed: {e}')
+              sys.exit(1)
+          "
+      
+      - name: 💾 Commit and push parquet file
+        if: steps.check_file.outputs.file_exists == 'true'
+        id: commit
+        run: |
+          echo "➕ Staging parquet file..."
+          git add merged_data.parquet
+          
+          DATE_IST=$(TZ='Asia/Kolkata' date +"%Y-%m-%d %I:%M:%S %p IST")
+          FILE_SIZE="${{ steps.check_file.outputs.file_size }}"
+          COMMITS="${{ steps.check_upstream.outputs.commits_behind }}"
+          REASON="${{ steps.should_generate.outputs.reason }}"
+          
+          if git diff --cached --quiet; then
+            echo "ℹ️ No changes in parquet file content"
+            git commit --allow-empty -m "✅ NSE merged data refreshed on ${DATE_IST}" \
+              -m "📊 File size: ${FILE_SIZE}" \
+              -m "📝 Reason: ${REASON}" \
+              -m "🔄 Upstream commits synced: ${COMMITS}" \
+              -m "🤖 Automated monthly update via GitHub Actions"
+            echo "commit_type=refresh" >> $GITHUB_OUTPUT
+          else
+            echo "💾 New data detected - creating commit..."
+            git commit -m "✅ NSE merged data updated on ${DATE_IST}" \
+              -m "📊 File size: ${FILE_SIZE}" \
+              -m "📝 Reason: ${REASON}" \
+              -m "🔄 Upstream commits synced: ${COMMITS}" \
+              -m "🤖 Automated monthly update via GitHub Actions"
+            echo "commit_type=new" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "🚀 Pushing to remote..."
+          git push origin main
+          
+          echo "✨ Parquet file successfully committed and pushed!"
+      
+      - name: 📊 Generate workflow summary
+        if: always()
+        run: |
+          echo "## 📈 Monthly Sync & Parquet Generation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Upstream status
+          echo "### 🔄 Upstream Sync" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.check_upstream.outputs.has_changes }}" == "true" ]; then
+            echo "✅ **Synced**: ${{ steps.check_upstream.outputs.commits_behind }} new commits merged" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "ℹ️ **Status**: Already up to date" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Parquet generation status
+          echo "### 📦 Parquet Generation" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.should_generate.outputs.generate }}" == "true" ]; then
+            if [ "${{ steps.check_file.outputs.file_exists }}" == "true" ]; then
+              echo "✅ **Status**: Success" >> $GITHUB_STEP_SUMMARY
+              echo "📁 **File**: \`merged_data.parquet\`" >> $GITHUB_STEP_SUMMARY
+              echo "📊 **Size**: ${{ steps.check_file.outputs.file_size }}" >> $GITHUB_STEP_SUMMARY
+              echo "📝 **Reason**: ${{ steps.should_generate.outputs.reason }}" >> $GITHUB_STEP_SUMMARY
+              
+              if [ "${{ steps.commit.outputs.commit_type }}" == "new" ]; then
+                echo "💾 **Commit**: New data pushed" >> $GITHUB_STEP_SUMMARY
+              elif [ "${{ steps.commit.outputs.commit_type }}" == "refresh" ]; then
+                echo "🔄 **Commit**: Refreshed (no content change)" >> $GITHUB_STEP_SUMMARY
+              fi
+            else
+              echo "❌ **Status**: Failed - File generation error" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "⏭️ **Status**: Skipped" >> $GITHUB_STEP_SUMMARY
+            echo "📝 **Reason**: ${{ steps.should_generate.outputs.reason }}" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Timestamp
+          DATE_IST=$(TZ='Asia/Kolkata' date +"%Y-%m-%d %I:%M:%S %p IST")
+          echo "🕒 **Completed**: ${DATE_IST}" >> $GITHUB_STEP_SUMMARY
+      
+      - name: 🧹 Cleanup
+        if: always()
+        run: |
+          echo "🧹 Cleaning up..."
+          git remote remove upstream 2>/dev/null || true
+          echo "✅ Cleanup completed"
+      
+      - name: 🔔 Notify on failure
+        if: failure()
+        run: |
+          echo "::error::❌ Monthly sync & parquet generation workflow failed!"
+          echo "::error::Check logs above for details"
+          exit 1
