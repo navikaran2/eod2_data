@@ -2,8 +2,8 @@ name: Weekly Data Sync & Parquet Generator
 
 on:
   schedule:
-    # Every Monday at 9:45 PM IST (4:15 PM UTC)
-    - cron: '15 16 * * 1'
+    # Every Monday at 10:00 PM IST (4:30 PM UTC)
+    - cron: '30 16 * * 1'
   workflow_dispatch: # Manual trigger
 
 permissions:
