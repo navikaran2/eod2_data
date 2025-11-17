@@ -1,9 +1,9 @@
-name: Monthly Data Sync & Parquet Generator
+name: Weekly Data Sync & Parquet Generator
 
 on:
   schedule:
-    # 15th of every month at 6:00 PM IST (12:30 PM UTC)
-    - cron: '30 12 15 * *'
+    # Every Monday at 9:45 PM IST (4:15 PM UTC)
+    - cron: '15 16 * * 1'
   workflow_dispatch: # Manual trigger
 
 permissions:
@@ -19,7 +19,7 @@ jobs:
         with:
           fetch-depth: 1  # Fast clone - only latest commit
       
-      - name: 🔍 Configure Git
+      - name: 🔧 Configure Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -30,10 +30,10 @@ jobs:
           git remote add upstream https://github.com/BennyThadikaran/eod2_data.git || true
           
           echo "🔄 Fetching latest data from upstream..."
-          git fetch upstream main --depth=1
+          git fetch upstream main
           
-          echo "🔀 Merging upstream changes..."
-          git merge upstream/main --no-edit --allow-unrelated-histories -m "🔄 Synced with upstream on $(TZ='Asia/Kolkata' date '+%d-%m-%Y %I:%M:%S %p IST')"
+          echo "🔀 Merging upstream changes (keeping your extra files)..."
+          git merge upstream/main --no-edit --allow-unrelated-histories -X theirs -m "🔄 Synced with upstream on $(TZ='Asia/Kolkata' date '+%d-%m-%Y %I:%M:%S %p IST')"
           
           echo "📤 Pushing sync to origin..."
           git push origin main
@@ -142,7 +142,7 @@ jobs:
 
           **📅 Updated On:** ${DATE_IST}
           **📦 File Size:** ${FILE_SIZE}
-          **🔄 Auto-generated:** Monthly sync from upstream
+          **🔄 Auto-generated:** Weekly sync every Monday at 9:45 PM IST
           
           ### 📥 Download
           Click on the file below to download the latest NSE master data parquet file.
@@ -160,7 +160,7 @@ jobs:
           \`\`\`
           
           ---
-          🤖 *This release is automatically generated every month on the 15th*" \
+          🤖 *This release is automatically generated every Monday at 9:45 PM IST*" \
             Master_nse_data.parquet
           
           echo "✅ Release created and file uploaded successfully!"
@@ -168,7 +168,7 @@ jobs:
       - name: 📊 Generate workflow summary
         if: always()
         run: |
-          echo "## 📈 Monthly Sync & Parquet Generation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## 📈 Weekly Sync & Parquet Generation Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           # Sync status
@@ -180,14 +180,14 @@ jobs:
           echo "### 📦 Parquet Generation & Release" >> $GITHUB_STEP_SUMMARY
           if [ "${{ steps.check_file.outputs.file_exists }}" == "true" ]; then
             echo "✅ **Status**: Success" >> $GITHUB_STEP_SUMMARY
-            echo "📁 **File**: \`Master_nse_data.parquet\`" >> $GITHUB_STEP_SUMMARY
+            echo "🔍 **File**: \`Master_nse_data.parquet\`" >> $GITHUB_STEP_SUMMARY
             echo "📊 **Size**: ${{ steps.check_file.outputs.file_size }}" >> $GITHUB_STEP_SUMMARY
-            echo "🔗 **Download URL**: [Click here](https://github.com/navikaran2/eod2_data/releases/latest/download/Master_nse_data.parquet)" >> $GITHUB_STEP_SUMMARY
+            echo "🔗 **Download URL**: [Click here](https://github.com/${{ github.repository }}/releases/latest/download/Master_nse_data.parquet)" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "💡 **For Streamlit/Python:**" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`python" >> $GITHUB_STEP_SUMMARY
             echo "import polars as pl" >> $GITHUB_STEP_SUMMARY
-            echo "url = 'https://github.com/navikaran2/eod2_data/releases/latest/download/Master_nse_data.parquet'" >> $GITHUB_STEP_SUMMARY
+            echo "url = 'https://github.com/${{ github.repository }}/releases/latest/download/Master_nse_data.parquet'" >> $GITHUB_STEP_SUMMARY
             echo "df = pl.read_parquet(url)" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           else
@@ -210,6 +210,6 @@ jobs:
       - name: 🔔 Notify on failure
         if: failure()
         run: |
-          echo "::error::❌ Monthly sync & parquet generation workflow failed!"
+          echo "::error::❌ Weekly sync & parquet generation workflow failed!"
           echo "::error::Check logs above for details"
           exit 1
