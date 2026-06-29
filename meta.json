@@ -1,6 +1,6 @@
 {
-  "lastUpdate": "2026-06-19T00:00:00+05:30",
-  "market_breadth_last_update": "2026-06-19T00:00:00+05:30",
+  "lastUpdate": "2026-06-26T00:00:00+05:30",
+  "market_breadth_last_update": "2026-06-26T00:00:00+05:30",
   "last_holiday_update": "",
   "data-version": 3.3,
   "year": 2026,
@@ -30,7 +30,7 @@
   "special_sessions": [
     "2026-02-01T00:00:00"
   ],
-  "special_sessions_last_update": "2026-06-19",
+  "special_sessions_last_update": "2026-06-26",
   "equityActions": [
     {
       "bcEndDate": "-",
